@@ -12,31 +12,64 @@ from policyopt import util
 import subprocess, tempfile, datetime
 def create_pbs_script(commands, outputfiles, jobname, queue, nodes, ppn):
     assert len(commands) == len(outputfiles)
+#     template = '''#!/bin/bash
+
+# #PBS -l walltime=72:00:00,nodes={nodes}:ppn={ppn},mem=10gb
+# #PBS -N {jobname}
+# #PBS -q {queue}
+# #PBS -o /dev/null
+# #PBS -e /dev/null
+
+# sleep $[ ( $RANDOM % 120 ) + 1 ]s
+
+# read -r -d '' COMMANDS << END
+# {cmds_str}
+# END
+# cmd=$(echo "$COMMANDS" | awk "NR == $PBS_ARRAYID")
+# echo $cmd
+
+# read -r -d '' OUTPUTFILES << END
+# {outputfiles_str}
+# END
+# outputfile=$PBS_O_WORKDIR/$(echo "$OUTPUTFILES" | awk "NR == $PBS_ARRAYID")
+# echo $outputfile
+# # Make sure output directory exists
+# mkdir -p "`dirname \"$outputfile\"`" 2>/dev/null
+
+# cd $PBS_O_WORKDIR
+
+# echo $cmd >$outputfile
+# eval $cmd >>$outputfile 2>&1
+# '''
     template = '''#!/bin/bash
 
-#PBS -l walltime=72:00:00,nodes={nodes}:ppn={ppn},mem=10gb
-#PBS -N {jobname}
-#PBS -q {queue}
-#PBS -o /dev/null
-#PBS -e /dev/null
+#SBATCH -p parallel
 
-sleep $[ ( $RANDOM % 120 ) + 1 ]s
+#SBATCH --mem=4G              
+
+#SBATCH -t 0-72:00                   # wall time (D-HH:MM)
+
+#SBATCH --mail-type=ALL             # Send a notification when a job starts, stops, or fails
+#SBATCH --mail-user=mdrolet@asu.edu # send-to address
+
+module purge
+module load anaconda2/4.4.0
+source activate imitation
+export PYTHONPATH=$PYTHONPATH:/home/mdrolet/imitation_baseline/imitation
 
 read -r -d '' COMMANDS << END
 {cmds_str}
 END
-cmd=$(echo "$COMMANDS" | awk "NR == $PBS_ARRAYID")
+cmd=$(echo "$COMMANDS" | awk "NR == $SLURM_ARRAY_TASK_ID")
 echo $cmd
 
 read -r -d '' OUTPUTFILES << END
 {outputfiles_str}
 END
-outputfile=$PBS_O_WORKDIR/$(echo "$OUTPUTFILES" | awk "NR == $PBS_ARRAYID")
+outputfile=$(echo "$OUTPUTFILES" | awk "NR == $SLURM_ARRAY_TASK_ID")
 echo $outputfile
 # Make sure output directory exists
 mkdir -p "`dirname \"$outputfile\"`" 2>/dev/null
-
-cd $PBS_O_WORKDIR
 
 echo $cmd >$outputfile
 eval $cmd >>$outputfile 2>&1
@@ -68,9 +101,10 @@ def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn,
 
         if job_range is not None:
             assert len(job_range.split('-')) == 2, 'Invalid job range'
-            cmd = 'qsub -t %s %s' % (job_range, f.name)
+            # cmd = 'qsub -t %s %s' % (job_range, f.name)
+            cmd = 'sbatch --array=%s %s' % (job_range, f.name)
         else:
-            cmd = 'qsub -t %d-%d %s' % (1, len(cmds), f.name)
+            cmd = 'sbatch --array=%d-%d %s' % (1, len(cmds), f.name)
 
         print 'Running command:', cmd
         print 'ok ({} jobs)? y/n'.format(num_cmds)
