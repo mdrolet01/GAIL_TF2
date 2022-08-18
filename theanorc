@@ -1,0 +1,3 @@
+[global]
+base_compiledir=/tmp/%(user)s/theano.NOBACKUP
+config.compile.timeout = 1000

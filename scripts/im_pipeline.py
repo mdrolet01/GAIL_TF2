@@ -43,19 +43,19 @@ def create_pbs_script(commands, outputfiles, jobname, queue, nodes, ppn):
 # '''
     template = '''#!/bin/bash
 
-#SBATCH -p parallel
+#SBATCH -p gpu
 
-#SBATCH --mem=4G              
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
 
+#SBATCH --mem=3G
+#SBATCH --qos=wildfire
 #SBATCH -t 0-72:00                   # wall time (D-HH:MM)
-
 #SBATCH --mail-type=ALL             # Send a notification when a job starts, stops, or fails
 #SBATCH --mail-user=mdrolet@asu.edu # send-to address
 
 module purge
-module load anaconda2/4.4.0
-source activate imitation
-export PYTHONPATH=$PYTHONPATH:/home/mdrolet/imitation_baseline/imitation
+module load singularity/3.8.0
 
 read -r -d '' COMMANDS << END
 {cmds_str}
@@ -72,8 +72,14 @@ echo $outputfile
 mkdir -p "`dirname \"$outputfile\"`" 2>/dev/null
 
 echo $cmd >$outputfile
-eval $cmd >>$outputfile 2>&1
+singularity run --env USER=$SLURM_ARRAY_TASK_ID --nv imitation.sif $cmd >>$outputfile 2>&1
 '''
+# eval $cmd >>$outputfile 2>&1
+# module load anaconda2/4.4.0
+# source activate imitation
+# export PYTHONPATH=$PYTHONPATH:/home/mdrolet/imitation_baseline/imitation
+#SBATCH --ntasks=1
+
     return template.format(
         jobname=jobname,
         queue=queue,
@@ -104,7 +110,7 @@ def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn,
             # cmd = 'qsub -t %s %s' % (job_range, f.name)
             cmd = 'sbatch --array=%s %s' % (job_range, f.name)
         else:
-            cmd = 'sbatch --array=%d-%d %s' % (1, len(cmds), f.name)
+            cmd = 'sbatch --array=[%d-%d]%%23 %s' % (1, len(cmds), f.name)
 
         print 'Running command:', cmd
         print 'ok ({} jobs)? y/n'.format(num_cmds)
