@@ -1,7 +1,7 @@
 import numpy as np
 import theano
 from theano import tensor
-import util
+from . import util
 
 def flatcat(arrays):
     '''
@@ -111,7 +111,7 @@ def function(inputs, outputs, **kwargs):
         # Find output elements with shape == () and convert them to scalars
         is_list = isinstance(out, (list,tuple))
         out_as_list = list(out) if is_list else [out]
-        for i in xrange(len(out_as_list)):
+        for i in range(len(out_as_list)):
             if isinstance(out_as_list[i], np.ndarray) and out_as_list[i].shape == ():
                 out_as_list[i] = np.asscalar(out_as_list[i])
         return out_as_list if is_list else out_as_list[0]

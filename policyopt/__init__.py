@@ -3,7 +3,7 @@ from policyopt import util
 import numpy as np
 import multiprocessing
 from time import sleep
-
+import binascii
 
 # State/action spaces
 class Space(object):
@@ -258,7 +258,7 @@ class MDP(object):
         '''Simulate a single trajectory'''
         sim = self.new_sim(init_state=init_state)
         obs, obsfeat, actions, actiondists, rewards = [], [], [], [], []
-        for _ in xrange(max_traj_len):
+        for _ in range(max_traj_len):
             obs.append(sim.obs[None,...].copy())
             obsfeat.append(obsfeat_fn(obs[-1]))
             a, adist = policy_fn(obsfeat[-1])
@@ -400,7 +400,9 @@ class MDP(object):
 _global_sim_info = None
 def _rollout():
     try:
-        import os, random; random.seed(os.urandom(4)); np.random.seed(int(os.urandom(4).encode('hex'), 16))
+        import os, random; random.seed(os.urandom(4)); 
+        # np.random.seed(int(os.urandom(4).encode('hex'), 16))
+        np.random.seed(int(binascii.hexlify(os.urandom(4)), 16))
         global _global_sim_info
         mdp, policy_fn, obsfeat_fn, max_traj_len = _global_sim_info
         return mdp.sim_single(policy_fn, obsfeat_fn, max_traj_len)

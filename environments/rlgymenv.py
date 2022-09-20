@@ -4,7 +4,7 @@ import policyopt
 import gym
 from gym import spaces, envs
 
-gym.undo_logger_setup()
+# gym.undo_logger_setup()
 import logging; logging.getLogger('gym.core').addHandler(logging.NullHandler())
 
 
@@ -12,7 +12,7 @@ class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
         self.env = envs.make(env_name)
         self.action_space = self.env.action_space
-        self.curr_obs = self.env.reset()
+        self.curr_obs, _ = self.env.reset()
         self.is_done = False
 
     def step(self, action):
@@ -24,7 +24,9 @@ class RLGymSim(policyopt.Simulation):
         else:
             assert action.ndim == 1 and action.dtype == np.float64
 
-        self.curr_obs, reward, self.is_done, _ = self.env.step(action)
+        # self.curr_obs, reward, self.is_done, _ = self.env.step(action)
+        self.curr_obs, reward, terminated, truncated, info = self.env.step(action)
+        self.is_done = terminated
         return reward
 
     @property
@@ -51,7 +53,7 @@ class RLGymSim(policyopt.Simulation):
 def _convert_space(space):
     '''Converts a rl-gym space to our own space representation'''
     if isinstance(space, spaces.Box):
-        assert space.low.ndim == 1 and space.low.shape >= 1
+        assert space.low.ndim == 1 and space.low.shape[0] >= 1
         return policyopt.ContinuousSpace(dim=space.low.shape[0])
     elif isinstance(space, spaces.Discrete):
         return policyopt.FiniteSpace(size=space.n)
@@ -60,7 +62,7 @@ def _convert_space(space):
 
 class RLGymMDP(policyopt.MDP):
     def __init__(self, env_name):
-        print 'Gym version:', gym.version.VERSION
+        print('Gym version:', gym.version.VERSION)
         self.env_name = env_name
 
         tmpsim = self.new_sim()

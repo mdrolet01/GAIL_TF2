@@ -48,7 +48,7 @@ def main():
                 if layer['type'] == 'nonlin':
                     layer['func'] = 'tanh'
             args.policy_hidden_spec = json.dumps(arch)
-        print 'Modified architecture:', args.policy_hidden_spec
+        print('Modified architecture:', args.policy_hidden_spec)
 
     argstr = json.dumps(vars(args), separators=(',', ':'), indent=2)
     print(argstr)
@@ -79,11 +79,11 @@ def main():
         enable_vnorm=True,
         max_kl=args.vf_max_kl,
         damping=args.vf_cg_damping,
-        time_scale=1./mdp.env_spec.timestep_limit,
+        time_scale=1./mdp.env_spec.max_episode_steps,
         varscope_name='ValueFunc')
 
-    max_traj_len = args.max_traj_len if args.max_traj_len is not None else mdp.env_spec.timestep_limit
-    print 'Max traj len:', max_traj_len
+    max_traj_len = args.max_traj_len if args.max_traj_len is not None else mdp.env_spec.max_episode_steps
+    print('Max traj len:', max_traj_len)
     opt = rl.SamplingPolicyOptimizer(
         mdp=mdp,
         discount=args.discount,
@@ -101,7 +101,7 @@ def main():
 
     log = nn.TrainingLog(args.log, [('args', argstr)])
 
-    for i in xrange(args.max_iter):
+    for i in range(args.max_iter):
         iter_info = opt.step()
         log.write(iter_info, print_header=i % 20 == 0)
         if args.save_freq != 0 and i % args.save_freq == 0 and args.log is not None:

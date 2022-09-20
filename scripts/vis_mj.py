@@ -39,7 +39,7 @@ def main():
     util.header('MDP observation space, action space sizes: %d, %d\n' % (mdp.obs_space.dim, mdp.action_space.storage_size))
 
     if args.max_traj_len is None:
-        args.max_traj_len = mdp.env_spec.timestep_limit
+        args.max_traj_len = mdp.env_spec.max_episode_steps
     util.header('Max traj len is {}'.format(args.max_traj_len))
 
     # Initialize the policy and load its parameters

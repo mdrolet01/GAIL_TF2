@@ -18,7 +18,7 @@ for env_name in names:
     for _ in xrange(num_trials):
         env.reset()
         ret = 0.
-        for _ in xrange(env.spec.timestep_limit):
+        for _ in xrange(env.spec.max_episode_steps):
             _, r, done, _ = env.step(env.action_space.sample())
             ret += r
             if done: break
