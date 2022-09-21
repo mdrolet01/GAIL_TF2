@@ -309,7 +309,7 @@ def phase1_train(spec, specfilename, run_local=True):
         for i in range(len(cmd_templates)):
             cmd = cmd_templates[i].format(**argdicts[i])
             print(cmd)
-            os.system(cmd)
+            os.system(cmd )
     else:
         script = runpbs(
             cmd_templates, outputfilenames, argdicts,
@@ -323,7 +323,7 @@ def phase1_train(spec, specfilename, run_local=True):
 
     # Keep git commit
     import subprocess
-    git_hash = subprocess.check_output('git rev-parse HEAD', shell=True).strip()
+    git_hash = subprocess.check_output('git rev-parse HEAD', shell=True).strip().decode('utf-8')
     with open(os.path.join(checkptdir, 'git_hash.txt'), 'w') as f:
         f.write(git_hash + '\n')
 

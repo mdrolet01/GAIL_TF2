@@ -93,7 +93,7 @@ training:
 
 
 options:
-  storagedir: imitation_runs/classic2
+  storagedir: imitation_runs/classic3
   traj_subdir: trajs
   checkpt_subdir: checkpoints
 
