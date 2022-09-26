@@ -136,7 +136,6 @@ class Model(object):
         return _hash_name2array([(v.name, v.get_value()) for v in self.get_all_variables()])
 
     def save_h5(self, h5file, key, extra_attrs=None):
-        import pdb; pdb.set_trace()
         with h5py.File(h5file, 'a') as f:
             if key in f:
                 util.warn('WARNING: key %s already exists in %s' % (key, h5file))
@@ -439,6 +438,7 @@ class Standardizer(Model):
     def varscope(self): return self.__varscope
 
     def update(self, points_N_D):
+        # print('updating')
         assert points_N_D.ndim == 2 and points_N_D.shape[1] == self._dim
         num = points_N_D.shape[0]
         count = float(self._count.get_value())
@@ -448,6 +448,7 @@ class Standardizer(Model):
         self._count.set_value(count + num)
 
     def standardize_expr(self, x_B_D):
+        # print('nn standardize_expr called')
         return (x_B_D - self._mean_1_D) / (self._stdev_1_D + self._eps)
 
     def unstandardize_expr(self, y_B_D):

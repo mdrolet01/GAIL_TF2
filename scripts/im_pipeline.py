@@ -211,6 +211,19 @@ def exec_saved_policy(env_name, policystr, num_trajs, deterministic, max_traj_le
 
     return trajbatch, policy, mdp
 
+def eval_snapshot2(env_name, checkptfile, snapshot_idx, num_trajs, deterministic):
+    policystr = '{}/snapshots/iter{:07d}'.format(checkptfile, snapshot_idx)
+    trajbatch, _, _ = exec_saved_policy(
+        env_name,
+        policystr,
+        num_trajs,
+        deterministic=deterministic,
+        max_traj_len=None)
+    returns = trajbatch.r.padded(fill=0.).sum(axis=1)
+    actions = trajbatch.a.padded(fill=0.)
+    lengths = np.array([len(traj) for traj in trajbatch])
+    util.header('{} gets return {} +/- {}'.format(policystr, returns.mean(), returns.std()))
+    return returns, lengths, actions
 
 def eval_snapshot(env_name, checkptfile, snapshot_idx, num_trajs, deterministic):
     policystr = '{}/snapshots/iter{:07d}'.format(checkptfile, snapshot_idx)
@@ -281,7 +294,7 @@ def phase1_train(spec, specfilename, run_local=True):
     checkptdir = os.path.join(spec['options']['storagedir'], spec['options']['checkpt_subdir'])
     util.mkdir_p(checkptdir)
     # Make sure checkpoint dir is empty
-    assert not os.listdir(checkptdir), 'Checkpoint directory {} is not empty!'.format(checkptdir)
+    # assert not os.listdir(checkptdir), 'Checkpoint directory {} is not empty!'.format(checkptdir)
 
     # Assemble the commands to run on the cluster
     cmd_templates, outputfilenames, argdicts = [], [], []
@@ -366,15 +379,17 @@ def phase2_eval(spec, specfilename):
 
     # Walk through all saved checkpoints
     collected_results = []
-    for i_eval, (task, alg, num_trajs, run, checkptfile) in enumerate(evals_to_do):
-        util.header('Evaluating run {}/{}: alg={},task={},num_trajs={},run={}'.format(
-            i_eval+1, len(evals_to_do), alg['name'], task['name'], num_trajs, run))
+    colors = ['red', 'green', 'blue']
+    for i_eval, (task, alg, num_trajs, run, checkptfile) in enumerate([evals_to_do[0]]):
+        util.header(f"Evaluating run {i_eval+1}/{len(evals_to_do)}: alg={alg['name']},task={task['name']},num_trajs={num_trajs},run={run}.")
 
         # Load the task's traj dataset to see how well the expert does
-        with h5py.File(taskname2dset[task['name']], 'r') as trajf:
-            # Expert's true return and traj lengths
-            ex_traj_returns = trajf['r_B_T'][...].sum(axis=1)
-            ex_traj_lengths = trajf['len_B'][...]
+        # with h5py.File(taskname2dset[task['name']], 'r') as trajf:
+        #     # Expert's true return and traj lengths
+        #     ex_traj_returns = trajf['r_B_T'][...].sum(axis=1)
+        #     ex_traj_returns_all = trajf['r_B_T'][...]
+        #     ex_traj_lengths = trajf['len_B'][...]
+        #     ex_traj_a = trajf['a_B_T_Da'][...]
 
         # Load the checkpoint file
         with pd.HDFStore(checkptfile, 'r') as f:
@@ -395,31 +410,62 @@ def phase2_eval(spec, specfilename):
                 assert all(name.startswith('iter') for name in snapshot_names)
                 snapshot_inds = sorted([int(name[len('iter'):]) for name in snapshot_names])
                 best_snapshot_idx = snapshot_inds[-1]
-                alg_traj_returns, alg_traj_lengths = eval_snapshot(
+                alg_traj_returns, alg_traj_lengths, acts = eval_snapshot2(
                     task['env'], checkptfile, best_snapshot_idx,
                     spec['options']['eval_num_trajs'], deterministic=True)
+                
+                if i_eval == 0:
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    fig, ax = plt.subplots(1,3, figsize=(10,4))
+                    ax[0].set_title("GAIL Actions Dist")
+                    fig.tight_layout()
 
+                    actions_car = pd.read_csv('scripts/action_car2.csv')
+                    for idx in range(actions_car.shape[1]):
+                        act = actions_car.iloc[:,idx].dropna().to_numpy()
+                        ax[2].plot(np.arange(act.shape[0]), act.flatten())
+                        ax[2].set_ylabel('Action')
+                        ax[2].set_xlabel('Timesteps (T)')
+                    fig.tight_layout()
+                    ax[2].set_title("IBC Actions Dist")
+                    rewards_car = pd.read_csv('scripts/return_car2.csv').iloc[:,0].to_numpy()
+                    ax[1].plot(rewards_car, label='IBC')
+                    # ax[1].legend(bbox_to_anchor=(0.18, 1.1), loc='upper left', ncol=2)
+                    ax[1].set_ylabel('Rewards')
+                    ax[1].set_xlabel('Epsiode Number')
+                
+                for act in acts:
+                    idxs = np.argwhere(act.flatten() != 0).flatten()
+                    ac = act[idxs]
+                    ax[0].plot(np.arange(ac.shape[0]), ac.flatten())
+                    ax[0].set_ylabel('Action')
+                    ax[0].set_xlabel('Timesteps (T)')
+                
+                ax[1].plot(np.arange(len(alg_traj_returns)), alg_traj_returns, label='GAIL')
+                # Ravi's CSVs
             else:
                 raise NotImplementedError('Analysis not implemented for {}'.format(alg['name']))
 
-            collected_results.append({
-                # Trial info
-                'alg': alg['name'],
-                'task': task['name'],
-                'num_trajs': num_trajs,
-                'run': run,
-                # Expert performance
-                'ex_traj_returns': ex_traj_returns,
-                'ex_traj_lengths': ex_traj_lengths,
-                # Learned policy performance
-                'alg_traj_returns': alg_traj_returns,
-                'alg_traj_lengths': alg_traj_lengths,
-            })
+    #         collected_results.append({
+    #             # Trial info
+    #             'alg': alg['name'],
+    #             'task': task['name'],
+    #             'num_trajs': num_trajs,
+    #             'run': run,
+    #             # Expert performance
+    #             'ex_traj_returns': ex_traj_returns,
+    #             'ex_traj_lengths': ex_traj_lengths,
+    #             # Learned policy performance
+    #             'alg_traj_returns': alg_traj_returns,
+    #             'alg_traj_lengths': alg_traj_lengths,
+    #         })
 
-    collected_results = pd.DataFrame(collected_results)
-    with pd.HDFStore(results_full_path, 'w') as outf:
-        outf['results'] = collected_results
-
+    # collected_results = pd.DataFrame(collected_results)
+    # with pd.HDFStore(results_full_path, 'w') as outf:
+    #     outf['results'] = collected_results
+    ax[1].legend()
+    plt.show()
 
 def main():
     np.set_printoptions(suppress=True, precision=5, linewidth=1000)

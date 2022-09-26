@@ -481,6 +481,7 @@ class ImitationOptimizer(object):
                     self.policy, params0_P,
                     samp_pobsfeat.stacked, sampbatch.a.stacked, sampbatch.adist.stacked,
                     advantages.stacked)
+                # step_print = [('dl', 0.0, float), ('kl', 0.0, float), ('gnorm', 0.0, float), ('bt', 0, int)]
                 self.policy.update_obsnorm(samp_pobsfeat.stacked)
 
             # Fit reward function

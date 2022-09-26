@@ -13,16 +13,30 @@ SIMPLE_ARCHITECTURE = '[{"type": "fc", "n": 100}, {"type": "nonlin", "func": "ta
 
 def load_dataset(filename, limit_trajs, data_subsamp_freq):
     # Load expert data
-    with h5py.File(filename, 'r') as f:
-        # Read data as written by vis_mj.py
-        full_dset_size = f['obs_B_T_Do'].shape[0] # full dataset size
-        dset_size = min(full_dset_size, limit_trajs) if limit_trajs is not None else full_dset_size
+    # with h5py.File(filename, 'r') as f:
+    #     # Read data as written by vis_mj.py
+    #     full_dset_size = f['obs_B_T_Do'].shape[0] # full dataset size
+    #     dset_size = min(full_dset_size, limit_trajs) if limit_trajs is not None else full_dset_size
 
-        exobs_B_T_Do = f['obs_B_T_Do'][:dset_size,...][...]
-        exa_B_T_Da = f['a_B_T_Da'][:dset_size,...][...]
-        exr_B_T = f['r_B_T'][:dset_size,...][...]
-        exlen_B = f['len_B'][:dset_size,...][...]
-
+    #     exobs_B_T_Do = f['obs_B_T_Do'][:dset_size,...][...]
+    #     exa_B_T_Da = f['a_B_T_Da'][:dset_size,...][...]
+    #     exr_B_T = f['r_B_T'][:dset_size,...][...]
+    #     exlen_B = f['len_B'][:dset_size,...][...]
+    
+    import pickle
+    with open('scripts/ddpg_expert1.pkl', 'rb') as fp:
+        data = pickle.load(fp)
+    
+    dset_size = 10
+    exobs_B_T_Do = data['observations']
+    exa_B_T_Da = data['actions']
+    exr_B_T = data['rewards']
+    exlen_B = data['lengths']
+    # se = np.mean([ sum(exr_B_T[i]) for i in range(len(exr_B_T)) ])
+    # se1 = np.mean([ sum(exr_B_T1[i]) for i in range(len(exr_B_T1)) ])
+    # obs = [exobs_B_T_Do[i][0,0] for i in range(len(exobs_B_T_Do))]
+    # obs1 = [exobs_B_T_Do1[i][0,0] for i in range(len(exobs_B_T_Do1))]
+    
     print('Expert dataset size: {} transitions ({} trajectories)'.format(exlen_B.sum(), len(exlen_B)))
     print('Expert average return:', exr_B_T.sum(axis=1).mean())
 
@@ -229,26 +243,26 @@ def main():
         if args.save_freq != 0 and i % args.save_freq == 0 and args.log is not None:
             log.write_snapshot(policy, i)
 
-        if args.plot_freq != 0 and i % args.plot_freq == 0:
-            exdata_N_Doa = np.concatenate([exobs_Bstacked_Do, exa_Bstacked_Da], axis=1)
-            pdata_M_Doa = np.concatenate([opt.last_sampbatch.obs.stacked, opt.last_sampbatch.a.stacked], axis=1)
+        # if args.plot_freq != 0 and i % args.plot_freq == 0:
+        #     exdata_N_Doa = np.concatenate([exobs_Bstacked_Do, exa_Bstacked_Da], axis=1)
+        #     pdata_M_Doa = np.concatenate([opt.last_sampbatch.obs.stacked, opt.last_sampbatch.a.stacked], axis=1)
 
-            # Plot reward
-            import matplotlib.pyplot as plt
-            _, ax = plt.subplots()
-            idx1, idx2 = 0,1
-            range1 = (min(exdata_N_Doa[:,idx1].min(), pdata_M_Doa[:,idx1].min()), max(exdata_N_Doa[:,idx1].max(), pdata_M_Doa[:,idx1].max()))
-            range2 = (min(exdata_N_Doa[:,idx2].min(), pdata_M_Doa[:,idx2].min()), max(exdata_N_Doa[:,idx2].max(), pdata_M_Doa[:,idx2].max()))
-            reward.plot(ax, idx1, idx2, range1, range2, n=100)
+        #     # Plot reward
+        #     import matplotlib.pyplot as plt
+        #     _, ax = plt.subplots()
+        #     idx1, idx2 = 0,1
+        #     range1 = (min(exdata_N_Doa[:,idx1].min(), pdata_M_Doa[:,idx1].min()), max(exdata_N_Doa[:,idx1].max(), pdata_M_Doa[:,idx1].max()))
+        #     range2 = (min(exdata_N_Doa[:,idx2].min(), pdata_M_Doa[:,idx2].min()), max(exdata_N_Doa[:,idx2].max(), pdata_M_Doa[:,idx2].max()))
+        #     reward.plot(ax, idx1, idx2, range1, range2, n=100)
 
-            # Plot expert data
-            ax.scatter(exdata_N_Doa[:,idx1], exdata_N_Doa[:,idx2], color='blue', s=1, label='expert')
+        #     # Plot expert data
+        #     ax.scatter(exdata_N_Doa[:,idx1], exdata_N_Doa[:,idx2], color='blue', s=1, label='expert')
 
-            # Plot policy samples
-            ax.scatter(pdata_M_Doa[:,idx1], pdata_M_Doa[:,idx2], color='red', s=1, label='apprentice')
+        #     # Plot policy samples
+        #     ax.scatter(pdata_M_Doa[:,idx1], pdata_M_Doa[:,idx2], color='red', s=1, label='apprentice')
 
-            ax.legend()
-            plt.show()
+        #     ax.legend()
+        #     plt.show()
 
 
 if __name__ == '__main__':

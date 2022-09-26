@@ -106,6 +106,7 @@ def main():
         log.write(iter_info, print_header=i % 20 == 0)
         if args.save_freq != 0 and i % args.save_freq == 0 and args.log is not None:
             log.write_snapshot(policy, i)
+            print(f'iter: {i}')
 
 
 if __name__ == '__main__':

@@ -12,7 +12,10 @@ class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
         self.env = envs.make(env_name)
         self.action_space = self.env.action_space
-        self.curr_obs, _ = self.env.reset()
+        if env_name == 'MountainCarContinuous-v0':
+            self.curr_obs = self.env.reset(options={'low': -0.58, 'high' : -0.42})
+        else:
+            self.curr_obs = self.env.reset()
         self.is_done = False
 
     def step(self, action):
@@ -25,7 +28,7 @@ class RLGymSim(policyopt.Simulation):
             assert action.ndim == 1 and action.dtype == np.float64
 
         # self.curr_obs, reward, self.is_done, _ = self.env.step(action)
-        self.curr_obs, reward, terminated, truncated, info = self.env.step(action)
+        self.curr_obs, reward, terminated, truncated = self.env.step(action)
         self.is_done = terminated
         return reward
 
