@@ -12,6 +12,7 @@ from abc import abstractmethod
 from collections import namedtuple
 import scipy.sparse.linalg as ssl
 import pdb
+from contextlib import contextmanager
 
 
 def maxnorm(a):
@@ -45,7 +46,7 @@ def discount(r_N_T_D, gamma):
 
 
 def flatcat(arrays):
-    return tf.concat([a.flatten() for a in arrays])
+    return tf.concat([tf.reshape(a, [-1]) for a in arrays], axis=0)
 
 
 def flatgrad(loss_fn, loss_fn_in, vars):
@@ -54,11 +55,6 @@ def flatgrad(loss_fn, loss_fn_in, vars):
     grads = t.gradient(loss, vars, unconnected_gradients=tf.UnconnectedGradients.ZERO)
     return tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0)
 
-def gf(loss_fn, inputs, vars):
-    with tf.GradientTape(persistent=True) as t:
-        loss = loss_fn(inputs)
-    grads = t.gradient(loss, vars, unconnected_gradients=tf.UnconnectedGradients.ZERO)
-    return tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0)
 
 def gaussian_kl(means1_N_D, stdevs1_N_D, means2_N_D, stdevs2_N_D):
     D = tf.cast(means1_N_D.shape[1], floatx())
@@ -93,7 +89,8 @@ def btlinesearch(f, x0, fx0, g, dx, accept_ratio, shrink_factor, max_steps, verb
     '''
     if fx0 is None: fx0 = f(x0)
     t = 1.
-    m = g.dot(dx)
+    # m = g.dot(dx)
+    m = tf.tensordot(g, dx, 1)
     if accept_ratio != 0 and m > 0: print('WARNING: %.10f not <= 0' % m)
     num_steps = 0
     while num_steps < max_steps:
@@ -127,7 +124,8 @@ def ngstep(x0, obj0, objgrad0, obj_and_kl_func, hvpx0_func, max_kl, damping, max
     damped_hvp_func = lambda v: hvpx0_func(v) + damping*v
     hvpop = ssl.LinearOperator(shape=(x0.shape[0], x0.shape[0]), matvec=damped_hvp_func)
     step, _ = ssl.cg(hvpop, -objgrad0, maxiter=max_cg_iter)
-    fullstep = step / np.sqrt(.5 * step.dot(damped_hvp_func(step)) / max_kl + 1e-8)
+    # fullstep = step / np.sqrt(.5 * step.dot(damped_hvp_func(step)) / max_kl + 1e-8)
+    fullstep = step / tf.math.sqrt(.5 * tf.tensordot(step, damped_hvp_func(step), 1) / max_kl + 1e-8)
 
     # Line search on objective with a hard KL wall
     if not enable_bt:
@@ -145,7 +143,11 @@ def ngstep(x0, obj0, objgrad0, obj_and_kl_func, hvpx0_func, max_kl, damping, max
         accept_ratio=.1, shrink_factor=.5, max_steps=10)
     return xnew, num_bt_steps
 
-
+def standardized(a):
+    out = np.copy(a)
+    out -= np.mean(a)
+    out /= np.std(a) + 1e-8
+    return out
 
 def subsample_feed(feed, frac):
     assert isinstance(feed, tuple) and len(feed) >= 1
@@ -168,7 +170,9 @@ def make_ngstep_func(model, compute_obj_kl, compute_obj_kl_with_grad, compute_kl
         assert isinstance(feed, tuple)
 
         params0 = model.get_params()
-        obj0, kl0, objgrad0 = compute_obj_kl_with_grad(*feed)
+        
+        # feed = (obsfeat, a, adist, standardized(adv))
+        obj0, kl0, objgrad0 = compute_obj_kl_with_grad(feed)
         gnorm = maxnorm(objgrad0)
         assert np.allclose(kl0, 0), 'Initial KL divergence is %.7f, but should be 0' % (kl0,)
         # Terminate early if gradient is too small
@@ -179,12 +183,11 @@ def make_ngstep_func(model, compute_obj_kl, compute_obj_kl_with_grad, compute_kl
         subsamp_feed = feed if subsample_hvp_frac is None else subsample_feed(feed, subsample_hvp_frac)
         def hvpx0_func(v):
             with model.try_params(params0):
-                hvp_args = subsamp_feed + (v,)
-                return compute_kl_hvp(*hvp_args)
+                return compute_kl_hvp(subsamp_feed, tf.cast(v, dtype=floatx()))
         # Objective for line search
         def obj_and_kl_func(p):
             with model.try_params(p):
-                obj, kl = compute_obj_kl(*feed)
+                obj, kl = compute_obj_kl(feed)
             return -obj, kl
         params1, num_bt_steps = ngstep(
             x0=params0,
@@ -197,226 +200,10 @@ def make_ngstep_func(model, compute_obj_kl, compute_obj_kl_with_grad, compute_kl
             max_cg_iter=max_cg_iter,
             enable_bt=enable_bt)
         model.set_params(params1)
-        obj1, kl1 = compute_obj_kl(*feed)
+        obj1, kl1 = compute_obj_kl(feed)
         return NGStepInfo(obj0, kl0, obj1, kl1, gnorm, num_bt_steps)
 
     return wrapper
-
-
-class Policy(Model):
-    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name):
-        super(Policy, self).__init__()
-        self.obsfeat_space, self.action_space, self._num_actiondist_params = obsfeat_space, action_space, num_actiondist_params
-
-        with tf.name_scope(varscope_name) as self.__varscope:
-            # Action distribution for this current policy
-            obsfeat_B_Df = Input(shape=obsfeat_space.shape[0], dtype=floatx())
-            self.obsnorm = Standardizer(self.obsfeat_space.shape[0])
-            normalized_obsfeat_B_Df = self.obsnorm.standardize_expr(obsfeat_B_Df)
-            actiondist_B_Pa = self._make_actiondist_ops(normalized_obsfeat_B_Df)
-            self._compute_actiondist_params = Model(inputs=obsfeat_B_Df, outputs=actiondist_B_Pa)
-        
-        # Only code above this line (i.e. _make_actiondist_ops) is allowed to make trainable variables.
-        
-        param_vars = self.trainable_variables
-        # Reinforcement learning
-        input_actions_B_Da = Input(shape=action_space.shape[0], dtype=tf.keras.backend.floatx())
-        logprobs_B = self._make_actiondist_logprob_ops(actiondist_B_Pa, input_actions_B_Da)
-
-        # Proposal distribution from old policy
-        proposal_actiondist_B_Pa = Input(shape=self.action_space.shape[0])
-        proposal_logprobs_B = self._make_actiondist_logprob_ops(proposal_actiondist_B_Pa, input_actions_B_Da)
-        
-        # Local RL objective
-        advantage_B = Input(shape=1, dtype=floatx())
-        impweight_B = tf.exp(logprobs_B - proposal_logprobs_B)
-        obj = tf.reduce_mean((impweight_B*advantage_B))
-        all_inputs = [obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B]
-        obj_fn = Model(inputs=all_inputs, outputs=obj)
-
-        # test_inputs = [np.array([[1,2]]), np.array([[3]]), np.array([[1]]), np.array([[9]])]
-        # kl_inputs = [obsfeat_B_Df, proposal_actiondist_B_Pa]
-        # test_inputs2 = [np.array([[1,2]]), np.array([[3]])]
-
-        # KL divergence from old policy
-        kl_B = self._make_actiondist_kl_ops(proposal_actiondist_B_Pa, actiondist_B_Pa)
-        kl = tf.reduce_mean(kl_B)
-        kl_fn = Model(inputs=all_inputs, outputs=kl)
-        # kl_fn2 = Model(inputs=kl_inputs, outputs=kl)
-
-        compute_obj_kl = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in)))
-        compute_obj_kl_with_grad = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in), flatgrad(obj_fn, _in, param_vars)))
-        
-        # KL Hessian-vector product
-        klgrad_P = tf.function(lambda _in : flatgrad(kl_fn, _in, param_vars))
-        # klgrad_P2 = tf.function(lambda _in : flatgrad(kl_fn2, _in, param_vars))
-        compute_hvp = tf.function(lambda _in, v_P : flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*v_P)), _in, param_vars))
-        self._ngstep = make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_hvp)
-
-    
-    def update_obsnorm(self, obs_B_Do):
-        '''Update observation normalization using a moving average'''
-        self.obsnorm.update(obs_B_Do)
-    
-    @tf.function
-    def sample_actions(self, obsfeat_B_Df, deterministic=False):
-        '''Samples actions conditioned on states'''
-        actiondist_B_Pa = self._compute_actiondist_params(obsfeat_B_Df)
-        return self._sample_from_actiondist(actiondist_B_Pa, deterministic), actiondist_B_Pa
-
-    # To be overridden
-    @abstractmethod
-    def _compute_actiondist_params_ops(self, *args): pass
-    @abstractmethod
-    def _make_actiondist_ops(self, obsfeat_B_Df): pass
-    @abstractmethod
-    def _make_actiondist_logprob_ops(self, actiondist_B_Pa, input_actions_B_Da): pass
-    @abstractmethod
-    def _make_actiondist_kl_ops(self, proposal_actiondist_B_Pa, actiondist_B_Pa): pass
-    @abstractmethod
-    def _sample_from_actiondist(self, actiondist_B_Pa, deterministic): pass
-    @abstractmethod
-    def _compute_actiondist_entropy(self, actiondist_B_Pa): pass
-
-
-class GaussianPolicy(Policy):
-    def __init__(self, cfg, obsfeat_space, action_space, varscope_name):
-        Policy.__init__(
-            self,
-            obsfeat_space=obsfeat_space,
-            action_space=action_space,
-            num_actiondist_params=action_space.shape[0]*2,
-            enable_obsnorm=True,
-            varscope_name=varscope_name)
-
-    def _extract_actiondist_params(self, actiondist_B_Pa):
-        means_B_Da = actiondist_B_Pa[:, :self.action_space.shape[0]]
-        stdevs_B_Da = actiondist_B_Pa[:, self.action_space.shape[0]:]
-        return means_B_Da, stdevs_B_Da
-
-    def _make_actiondist_logprob_ops(self, actiondist_B_Pa, input_actions_B_Da):
-        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
-        return gaussian_log_density(means_B_Da, stdevs_B_Da, input_actions_B_Da)
-
-    def _make_actiondist_kl_ops(self, proposal_actiondist_B_Pa, actiondist_B_Pa):
-        proposal_means_B_Da, proposal_stdevs_B_Da = self._extract_actiondist_params(proposal_actiondist_B_Pa)
-        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
-        return gaussian_kl(proposal_means_B_Da, proposal_stdevs_B_Da, means_B_Da, stdevs_B_Da)
-    
-    def _sample_from_actiondist(self, actiondist_B_Pa, deterministic):
-        adim = self.action_space.shape[0]
-        means_B_Da, stdevs_B_Da = actiondist_B_Pa[:,:adim], actiondist_B_Pa[:,adim:]
-        if deterministic:
-            return means_B_Da
-        stdnormal_B_Da = np.random.randn(actiondist_B_Pa.shape[0], adim)
-        assert stdnormal_B_Da.shape == means_B_Da.shape == stdevs_B_Da.shape
-        return (stdnormal_B_Da*stdevs_B_Da) + means_B_Da
-    
-    def _compute_actiondist_params_ops(self, actiondist_B_Pa):
-        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
-        return tf.function(lambda x : tf.concat([means_B_Da(x), stdevs_B_Da], axis=1))
-    
-    def _make_actiondist_ops(self, obsfeat_B_Df):
-        act_dim = self.action_space.shape[0]
-        dense1 = Dense(100, activation='tanh')(obsfeat_B_Df)
-        dense2 = Dense(100, activation='tanh')(dense1)
-        means_B_Da = Dense(act_dim)(dense2)
-
-        logstdevs_1_Da = tf.Variable(np.full((1, act_dim), -0.5), dtype=floatx())
-        stdevs_1_Da = tf.exp(logstdevs_1_Da)
-        stdevs_B_Da = tf.ones(shape=(act_dim,))*stdevs_1_Da
-        
-        return tf.concat([means_B_Da, stdevs_B_Da], axis=1)
-
-class ValueFunc(Model):
-    def __init__(self, hidden_spec, obsfeat_space, enable_obsnorm, enable_vnorm, varscope_name, max_kl, damping, time_scale):
-        super(ValueFunc, self).__init__()
-        self.hidden_spec = hidden_spec
-        self.obsfeat_space = obsfeat_space
-        self.enable_obsnorm = enable_obsnorm
-        self.enable_vnorm = enable_vnorm
-        self.max_kl = max_kl
-        self.damping = damping
-        self.time_scale = time_scale
-
-        with tf.name_scope(varscope_name) as self.__varscope:
-            # Action distribution for this current policy
-            obsfeat_B_Df = Input(shape=obsfeat_space.shape[0], dtype=floatx())
-            self.obsnorm = Standardizer(self.obsfeat_space.shape[0])
-            self.vnorm = Standardizer(1)
-            t_B = Input(batch_input_shape=(None,1), dtype=floatx())
-            scaled_t_B = t_B * self.time_scale
-            net_input = tf.concat([obsfeat_B_Df, scaled_t_B], axis=1)
-            val_B = self._make_dense_net(net_input)
-            self._evaluate_raw = Model(inputs=[obsfeat_B_Df, t_B], outputs=val_B)
-        
-        param_vars = self.trainable_variables
-        target_val_B = Input(shape=1, dtype=floatx())
-        old_val_B = Input(shape=1, dtype=floatx())
-        all_inputs = [obsfeat_B_Df, t_B, target_val_B, old_val_B]
-        obj = -tf.reduce_mean(tf.math.square(val_B - target_val_B))
-        obj_fn = Model(inputs=all_inputs, outputs=obj)
-        objgrad_P = tf.function(lambda _in : flatgrad(obj_fn, _in, param_vars))
-        test_inputs = [np.array([[1,2]], dtype=floatx()), np.array([[3,1]], dtype=floatx()), np.array([[1]], dtype=floatx()), np.array([[1]], dtype=floatx())]
-        
-        # KL divergence (as Gaussian) and its gradient
-        kl = tf.reduce_mean(tf.math.square(old_val_B - val_B))
-        kl_fn = Model(inputs=all_inputs, outputs=[kl, obj])
-        
-        test_tens = [obsfeat_B_Df, t_B, target_val_B, old_val_B]
-        objgrad_P = gf(kl_fn, test_tens, param_vars)
-        compute_obj_kl = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in)))
-        compute_obj_kl_with_grad = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in), flatgrad(obj_fn, _in, param_vars)))
-
-        # KL Hessian-vector product
-        klgrad_P = tf.function(lambda _in : flatgrad(kl_fn, _in, param_vars))
-        compute_hvp = tf.function(lambda _in, x_P : flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*x_P)), _in, param_vars))
-        # self._ngstep = optim.make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_kl_hvp)
-    
-    def evaluate(self, obs_B_Do, t_B):
-        # ignores the time
-        assert obs_B_Do.shape[0] == t_B.shape[0]
-        stds = self.obsnorm.standardize(obs_B_Do)
-        v1 = self._evaluate_raw([stds, np.array(t_B, dtype=floatx()).reshape(-1,1)])
-        return self.vnorm.unstandardize(v1)[:,0]
-
-    def _make_dense_net(self, net_input):
-        dense1 = Dense(100, activation='tanh')(net_input)
-        dense2 = Dense(100, activation='tanh')(dense1)
-        out_layer = Dense(1)(dense2)
-        return out_layer
-
-class Trajectory(object):
-    __slots__ = ('obs_T_Do', 'obsfeat_T_Df', 'adist_T_Pa', 'a_T_Da', 'r_T')
-    def __init__(self, obs_T_Do, obsfeat_T_Df, adist_T_Pa, a_T_Da, r_T):
-        assert (
-            obs_T_Do.ndim == 2 and obsfeat_T_Df.ndim == 2 and adist_T_Pa.ndim == 2 and a_T_Da.ndim == 2 and r_T.ndim == 1 and
-            obs_T_Do.shape[0] == obsfeat_T_Df.shape[0] == adist_T_Pa.shape[0] == a_T_Da.shape[0] == r_T.shape[0]
-        )
-        self.obs_T_Do = obs_T_Do
-        self.obsfeat_T_Df = obsfeat_T_Df
-        self.adist_T_Pa = adist_T_Pa
-        self.a_T_Da = a_T_Da
-        self.r_T = r_T
-
-    def __len__(self):
-        return self.obs_T_Do.shape[0]
-
-    # Saving/loading discards obsfeat
-    def save_h5(self, grp, **kwargs):
-        grp.create_dataset('obs_T_Do', data=self.obs_T_Do, **kwargs)
-        grp.create_dataset('adist_T_Pa', data=self.adist_T_Pa, **kwargs)
-        grp.create_dataset('a_T_Da', data=self.a_T_Da, **kwargs)
-        grp.create_dataset('r_T', data=self.r_T, **kwargs)
-
-    @classmethod
-    def LoadH5(cls, grp, obsfeat_fn):
-        '''
-        obsfeat_fn: used to fill in observation features. if None, the raw observations will be copied over.
-        '''
-        obs_T_Do = grp['obs_T_Do'][...]
-        obsfeat_T_Df = obsfeat_fn(obs_T_Do) if obsfeat_fn is not None else obs_T_Do.copy()
-        return cls(obs_T_Do, obsfeat_T_Df, grp['adist_T_Pa'][...], grp['a_T_Da'][...], grp['r_T'][...])
 
 def raggedstack(arrays, fill=0., axis=0, raggedaxis=1):
     '''
@@ -501,6 +288,258 @@ class TrajBatch(object):
         return cls.FromTrajs([Trajectory.LoadH5(v, obsfeat_fn) for k, v in dset.iteritems()])
 
 
+class Policy(Model):
+    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name):
+        super(Policy, self).__init__()
+        self.obsfeat_space, self.action_space, self._num_actiondist_params = obsfeat_space, action_space, num_actiondist_params
+
+        with tf.name_scope(varscope_name) as self.__varscope:
+            # Action distribution for this current policy
+            obsfeat_B_Df = Input(shape=obsfeat_space.shape[0], dtype=floatx())
+            self.obsnorm = Standardizer(self.obsfeat_space.shape[0])
+            normalized_obsfeat_B_Df = self.obsnorm.standardize_expr(obsfeat_B_Df)
+            actiondist_B_Pa = self._make_actiondist_ops(normalized_obsfeat_B_Df)
+            self._compute_actiondist_params = Model(inputs=obsfeat_B_Df, outputs=actiondist_B_Pa)
+        
+        # Only code above this line (i.e. _make_actiondist_ops) is allowed to make trainable variables.
+        
+        param_vars = self.trainable_variables
+        # Reinforcement learning
+        input_actions_B_Da = Input(shape=action_space.shape[0], dtype=floatx())
+        logprobs_B = self._make_actiondist_logprob_ops(actiondist_B_Pa, input_actions_B_Da)
+
+        # Proposal distribution from old policy
+        proposal_actiondist_B_Pa = Input(shape=actiondist_B_Pa.shape[1], dtype=floatx())
+        proposal_logprobs_B = self._make_actiondist_logprob_ops(proposal_actiondist_B_Pa, input_actions_B_Da)
+        
+        # Local RL objective
+        advantage_B = Input(shape=1, dtype=floatx())
+        impweight_B = tf.exp(logprobs_B - proposal_logprobs_B)
+        obj = tf.reduce_mean((impweight_B*advantage_B))
+        all_inputs = [obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B]
+        obj_fn = Model(inputs=all_inputs, outputs=obj)
+
+        # tin = [np.ones((3,2), dtype=floatx()), np.ones((3,1),dtype=floatx()), np.ones((3,2), dtype=floatx()), np.ones((3,1),dtype=floatx())]
+        # kl_inputs = [obsfeat_B_Df, proposal_actiondist_B_Pa]
+        # test_inputs2 = [np.array([[1,2]]), np.array([[3]])]
+
+        # KL divergence from old policy
+        kl_B = self._make_actiondist_kl_ops(proposal_actiondist_B_Pa, actiondist_B_Pa)
+        kl = tf.reduce_mean(kl_B)
+        kl_fn = Model(inputs=all_inputs, outputs=kl)
+        # kl_fn2 = Model(inputs=kl_inputs, outputs=kl)
+
+        compute_obj_kl = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in)))
+        compute_obj_kl_with_grad = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in), flatgrad(obj_fn, _in, param_vars)))
+
+        # KL Hessian-vector product
+        klgrad_P = tf.function(lambda _in : flatgrad(kl_fn, _in, param_vars))
+        # klgrad_P2 = tf.function(lambda _in : flatgrad(kl_fn2, _in, param_vars))
+        compute_kl_hvp = tf.function(lambda _in, v_P : flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*v_P)), _in, param_vars))
+        self._ngstep = make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_kl_hvp)
+
+    
+    def update_obsnorm(self, obs_B_Do):
+        '''Update observation normalization using a moving average'''
+        self.obsnorm.update(obs_B_Do)
+    
+    @tf.function
+    def sample_actions(self, obsfeat_B_Df, deterministic=False):
+        '''Samples actions conditioned on states'''
+        actiondist_B_Pa = self._compute_actiondist_params(obsfeat_B_Df)
+        return self._sample_from_actiondist(actiondist_B_Pa, deterministic), actiondist_B_Pa
+    
+    def set_params(self, x):
+        assert len(x.shape) == 1
+        pos = 0
+        for v in self.trainable_variables:
+            val = v.read_value()
+            s = tf.size(val)
+            v.assign(tf.reshape(x[pos:pos+s], val.shape))
+            pos += s
+        assert pos == x.shape[0]
+
+    def get_params(self):
+        return flatcat([v.read_value() for v in gp.trainable_variables])
+    
+    @contextmanager
+    def try_params(self, x):
+        orig_x = self.get_params()
+        self.set_params(x)
+        yield
+        self.set_params(orig_x)
+    
+    # To be overridden
+    @abstractmethod
+    def _compute_actiondist_params_ops(self, *args): pass
+    @abstractmethod
+    def _make_actiondist_ops(self, obsfeat_B_Df): pass
+    @abstractmethod
+    def _make_actiondist_logprob_ops(self, actiondist_B_Pa, input_actions_B_Da): pass
+    @abstractmethod
+    def _make_actiondist_kl_ops(self, proposal_actiondist_B_Pa, actiondist_B_Pa): pass
+    @abstractmethod
+    def _sample_from_actiondist(self, actiondist_B_Pa, deterministic): pass
+    @abstractmethod
+    def _compute_actiondist_entropy(self, actiondist_B_Pa): pass
+
+
+class GaussianPolicy(Policy):
+    def __init__(self, cfg, obsfeat_space, action_space, varscope_name):
+        Policy.__init__(
+            self,
+            obsfeat_space=obsfeat_space,
+            action_space=action_space,
+            num_actiondist_params=action_space.shape[0]*2,
+            enable_obsnorm=True,
+            varscope_name=varscope_name)
+
+    def _extract_actiondist_params(self, actiondist_B_Pa):
+        means_B_Da = actiondist_B_Pa[:, :self.action_space.shape[0]]
+        stdevs_B_Da = actiondist_B_Pa[:, self.action_space.shape[0]:]
+        return means_B_Da, stdevs_B_Da
+
+    def _make_actiondist_logprob_ops(self, actiondist_B_Pa, input_actions_B_Da):
+        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
+        return gaussian_log_density(means_B_Da, stdevs_B_Da, input_actions_B_Da)
+
+    def _make_actiondist_kl_ops(self, proposal_actiondist_B_Pa, actiondist_B_Pa):
+        proposal_means_B_Da, proposal_stdevs_B_Da = self._extract_actiondist_params(proposal_actiondist_B_Pa)
+        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
+        return gaussian_kl(proposal_means_B_Da, proposal_stdevs_B_Da, means_B_Da, stdevs_B_Da)
+    
+    def _sample_from_actiondist(self, actiondist_B_Pa, deterministic):
+        adim = self.action_space.shape[0]
+        means_B_Da, stdevs_B_Da = actiondist_B_Pa[:,:adim], actiondist_B_Pa[:,adim:]
+        if deterministic:
+            return means_B_Da
+        stdnormal_B_Da = np.random.randn(actiondist_B_Pa.shape[0], adim)
+        assert stdnormal_B_Da.shape == means_B_Da.shape == stdevs_B_Da.shape
+        return (stdnormal_B_Da*stdevs_B_Da) + means_B_Da
+    
+    def _compute_actiondist_params_ops(self, actiondist_B_Pa):
+        means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
+        return tf.function(lambda x : tf.concat([means_B_Da(x), stdevs_B_Da], axis=1))
+    
+    def _make_actiondist_ops(self, obsfeat_B_Df):
+        act_dim = self.action_space.shape[0]
+        dense1 = Dense(100, activation='tanh')(obsfeat_B_Df)
+        dense2 = Dense(100, activation='tanh')(dense1)
+        means_B_Da = Dense(act_dim)(dense2)
+
+        logstdevs_1_Da = tf.Variable(np.full((1, act_dim), -0.5), dtype=floatx())
+        stdevs_1_Da = tf.exp(logstdevs_1_Da)
+        stdevs_B_Da = tf.ones_like(means_B_Da)*stdevs_1_Da
+        return tf.concat([means_B_Da, stdevs_B_Da], axis=1)
+
+class ValueFunc(Model):
+    def __init__(self, hidden_spec, obsfeat_space, enable_obsnorm, enable_vnorm, varscope_name, max_kl, damping, time_scale):
+        super(ValueFunc, self).__init__()
+        self.hidden_spec = hidden_spec
+        self.obsfeat_space = obsfeat_space
+        self.enable_obsnorm = enable_obsnorm
+        self.enable_vnorm = enable_vnorm
+        self.max_kl = max_kl
+        self.damping = damping
+        self.time_scale = time_scale
+
+        with tf.name_scope(varscope_name) as self.__varscope:
+            # Action distribution for this current policy
+            obsfeat_B_Df = Input(shape=obsfeat_space.shape[0], dtype=floatx())
+            self.obsnorm = Standardizer(self.obsfeat_space.shape[0])
+            self.vnorm = Standardizer(1)
+            t_B = Input(batch_input_shape=(None,1), dtype=floatx())
+            scaled_t_B = t_B * self.time_scale
+            net_input = tf.concat([obsfeat_B_Df, scaled_t_B], axis=1)
+            val_B = self._make_dense_net(net_input)
+            self._evaluate_raw = Model(inputs=[obsfeat_B_Df, t_B], outputs=val_B)
+        
+        param_vars = self.trainable_variables
+        target_val_B = Input(shape=1, dtype=floatx())
+        old_val_B = Input(shape=1, dtype=floatx())
+        all_inputs = [obsfeat_B_Df, t_B, target_val_B, old_val_B]
+        obj = -tf.reduce_mean(tf.math.square(val_B - target_val_B))
+        obj_fn = Model(inputs=all_inputs, outputs=obj)
+        objgrad_P = tf.function(lambda _in : flatgrad(obj_fn, _in, param_vars))
+        
+        # KL divergence (as Gaussian) and its gradient
+        kl = tf.reduce_mean(tf.math.square(old_val_B - val_B))
+        kl_fn = Model(inputs=all_inputs, outputs=[kl, obj])
+        
+        # test_inputs = [np.array([[1,2]], dtype=floatx()), np.array([[3,1]], dtype=floatx()), np.array([[1]], dtype=floatx()), np.array([[1]], dtype=floatx())]
+        # test_tens = [obsfeat_B_Df, t_B, target_val_B, old_val_B]
+        # objgrad_P = flatgrad(kl_fn, test_tens, param_vars)
+        
+        compute_obj_kl = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in)))
+        compute_obj_kl_with_grad = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in), flatgrad(obj_fn, _in, param_vars)))
+
+        # KL Hessian-vector product
+        klgrad_P = tf.function(lambda _in : flatgrad(kl_fn, _in, param_vars))
+        compute_kl_hvp = tf.function(lambda _in, x_P : flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*x_P)), _in, param_vars))
+        self._ngstep = make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_kl_hvp)
+    
+    def evaluate(self, obs_B_Do, t_B):
+        # ignores the time
+        assert obs_B_Do.shape[0] == t_B.shape[0]
+        stds = self.obsnorm.standardize(obs_B_Do)
+        v1 = self._evaluate_raw([stds, np.array(t_B, dtype=floatx()).reshape(-1,1)])
+        res = self.vnorm.unstandardize(v1)[:,0]
+        return res
+
+    def _make_dense_net(self, net_input):
+        dense1 = Dense(100, activation='tanh')(net_input)
+        dense2 = Dense(100, activation='tanh')(dense1)
+        out_layer = Dense(1)(dense2)
+        return out_layer
+
+class Trajectory(object):
+    __slots__ = ('obs_T_Do', 'obsfeat_T_Df', 'adist_T_Pa', 'a_T_Da', 'r_T')
+    def __init__(self, obs_T_Do, obsfeat_T_Df, adist_T_Pa, a_T_Da, r_T):
+        assert (
+            obs_T_Do.ndim == 2 and obsfeat_T_Df.ndim == 2 and adist_T_Pa.ndim == 2 and a_T_Da.ndim == 2 and r_T.ndim == 1 and
+            obs_T_Do.shape[0] == obsfeat_T_Df.shape[0] == adist_T_Pa.shape[0] == a_T_Da.shape[0] == r_T.shape[0]
+        )
+        self.obs_T_Do = obs_T_Do
+        self.obsfeat_T_Df = obsfeat_T_Df
+        self.adist_T_Pa = adist_T_Pa
+        self.a_T_Da = a_T_Da
+        self.r_T = r_T
+
+    def __len__(self):
+        return self.obs_T_Do.shape[0]
+
+    # Saving/loading discards obsfeat
+    def save_h5(self, grp, **kwargs):
+        grp.create_dataset('obs_T_Do', data=self.obs_T_Do, **kwargs)
+        grp.create_dataset('adist_T_Pa', data=self.adist_T_Pa, **kwargs)
+        grp.create_dataset('a_T_Da', data=self.a_T_Da, **kwargs)
+        grp.create_dataset('r_T', data=self.r_T, **kwargs)
+
+    @classmethod
+    def LoadH5(cls, grp, obsfeat_fn):
+        '''
+        obsfeat_fn: used to fill in observation features. if None, the raw observations will be copied over.
+        '''
+        obs_T_Do = grp['obs_T_Do'][...]
+        obsfeat_T_Df = obsfeat_fn(obs_T_Do) if obsfeat_fn is not None else obs_T_Do.copy()
+        return cls(obs_T_Do, obsfeat_T_Df, grp['adist_T_Pa'][...], grp['a_T_Da'][...], grp['r_T'][...])
+
+
+def TRPO(max_kl, damping, subsample_hvp_frac=.1, grad_stop_tol=1e-6):
+
+    def trpo_step(policy, params0_P, obsfeat, a, adist, adv):
+        feed = (obsfeat, a, adist, standardized(adv))
+        stepinfo = policy._ngstep(feed, max_kl=max_kl, damping=damping, subsample_hvp_frac=subsample_hvp_frac, grad_stop_tol=grad_stop_tol)
+        return [
+            ('dl', stepinfo.obj1 - stepinfo.obj0, float), # improvement of penalized objective
+            ('kl', stepinfo.kl1, float), # kl cost of solution
+            ('gnorm', stepinfo.gnorm, float), # gradient norm
+            ('bt', stepinfo.bt, int), # number of backtracking steps
+        ]
+
+    return trpo_step
+
+
 def compute_qvals(r, gamma):
     assert isinstance(r, RaggedArray)
     trajlengths = r.lengths
@@ -524,11 +563,10 @@ def compute_advantage(r, obsfeat, time, value_func, gamma, lam):
     # Time-dependent baseline that cheats on the current batch
     simplev_B_T = np.tile(np.nanmean(q_B_T, axis=0, keepdims=True), (B, 1)); assert simplev_B_T.shape == (B, maxT)
     simplev = RaggedArray([simplev_B_T[i,:l] for i, l in enumerate(trajlengths)])
-
+        
     # State-dependent baseline (value function)
     v_stacked = value_func.evaluate(obsfeat.stacked, time.stacked); assert len(v_stacked.shape) == 1
     v = RaggedArray(v_stacked, lengths=trajlengths)
-
     # Compare squared loss of value function to that of the time-dependent value function
     constfunc_prediction_loss = np.var(q.stacked)
     simplev_prediction_loss = np.var(q.stacked-simplev.stacked) #((q.stacked-simplev.stacked)**2).mean()
@@ -544,7 +582,6 @@ def compute_advantage(r, obsfeat, time, value_func, gamma, lam):
     adv_B_T = discount(delta_B_T, gamma*lam); assert adv_B_T.shape == (B, maxT)
     adv = RaggedArray([adv_B_T[i,:l] for i, l in enumerate(trajlengths)])
     assert np.allclose(adv.padded(fill=0), adv_B_T)
-
     return adv, q, vfunc_r2, simplev_r2
 
 
@@ -626,8 +663,6 @@ def sim_single(policy_fn, obsfeat_fn, max_ep_len):
         obs.append(ob[None,...].copy())
         obsfeat.append(obsfeat_fn(obs[-1]))
         a, adist = policy_fn(obsfeat[-1])
-        # agent_outs = sess.run(get_action_ops, feed_dict={x_ph: ob.reshape(1,-1)})
-        # a, v_t, logp_t, info_t = agent_outs[0][0], agent_outs[1], agent_outs[2], agent_outs[3:]
         ob, r, d, _ = env.step(a[0,:])
         rewards.append(r)
         actions.append(a)
@@ -638,7 +673,7 @@ def sim_single(policy_fn, obsfeat_fn, max_ep_len):
                       np.concatenate(actions), np.array(rewards))
 
 def sim_mp(policy_fn=None, obsfeat_fn=None):
-    min_total_sa = 5000
+    min_total_sa = 1500
     trajs = []
     num_sa = 0
     while True:
@@ -649,9 +684,22 @@ def sim_mp(policy_fn=None, obsfeat_fn=None):
             break
     return TrajBatch.FromTrajs(trajs)
 
-import timeit
-with options({'constant_folding': True}):
-    trajbatch = sim_mp(policy_fn=gp.sample_actions, obsfeat_fn= lambda obs : obs)
-    advantages, qvals, vfunc_r2, simplev_r2 = compute_advantage(
-        trajbatch.r, trajbatch.obsfeat, trajbatch.time,
-        vf, gamma, lam)
+# import timeit
+# with options({'constant_folding': True}):
+trajbatch = sim_mp(policy_fn=gp.sample_actions, obsfeat_fn= lambda obs : obs)
+
+advantages, qvals, vfunc_r2, simplev_r2 = compute_advantage(
+    trajbatch.r, trajbatch.obsfeat, trajbatch.time,
+    vf, gamma, lam)
+
+step_func = TRPO(max_kl, damping)
+
+params0_P = gp.get_params()
+
+extra_print_fields = step_func(
+    gp, params0_P,
+    trajbatch.obsfeat.stacked, trajbatch.a.stacked, trajbatch.adist.stacked,
+    advantages.stacked.reshape(-1,1))
+
+gp.update_obsnorm(trajbatch.obsfeat.stacked)
+
