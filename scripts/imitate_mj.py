@@ -24,7 +24,7 @@ def load_dataset(filename, limit_trajs, data_subsamp_freq):
     #     exlen_B = f['len_B'][:dset_size,...][...]
     
     import pickle
-    with open('scripts/ddpg_expert1.pkl', 'rb') as fp:
+    with open('ddpg/ddpg_expert.pkl', 'rb') as fp:
         data = pickle.load(fp)
     
     dset_size = 10

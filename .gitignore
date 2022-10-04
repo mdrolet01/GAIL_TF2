@@ -1,4 +1,6 @@
-imitation_runs/classic/checkpoints
+imitation_runs
+classic_policies
+ddpg/all_car_oracles
 history
 **.pyc
 # Byte-compiled / optimized / DLL files
