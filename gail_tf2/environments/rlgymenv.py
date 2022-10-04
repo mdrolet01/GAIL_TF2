@@ -1,6 +1,6 @@
 import numpy as np
 from gail_tf2 import policyopt
-
+from tensorflow.keras.backend import floatx
 import gym
 from gym import spaces, envs
 
@@ -25,7 +25,7 @@ class RLGymSim(policyopt.Simulation):
             assert action.ndim == 1 and action.size == 1 and action.dtype in (np.int32, np.int64)
             action = action[0]
         else:
-            assert action.ndim == 1 and action.dtype == np.float64
+            assert action.ndim == 1 and action.dtype == floatx()
 
         # self.curr_obs, reward, self.is_done, _ = self.env.step(action)
         self.curr_obs, reward, terminated, truncated = self.env.step(action)

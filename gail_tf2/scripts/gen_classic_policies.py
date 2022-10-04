@@ -1,7 +1,7 @@
 import os, os.path
 
 outdir = 'classic_policies'
-cmd_template = 'python scripts/run_rl_mj.py --env_name {env} --tiny_policy --min_total_sa 5000 --sim_batch_size 1 --max_iter 101 --log {out}'
+cmd_template = 'python run_rl_mj.py --env_name {env} --tiny_policy --min_total_sa 5000 --sim_batch_size 1 --max_iter 101 --log {out}'
 
 try: os.mkdir(outdir)
 except OSError: pass

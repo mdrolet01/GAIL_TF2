@@ -7,7 +7,7 @@ def flatcat(arrays):
 
 
 def flatgrad(loss_fn, loss_fn_in, vars):
-    with tf.GradientTape(persistent=True) as t:
+    with tf.GradientTape() as t:
         loss = loss_fn(loss_fn_in)
     grads = t.gradient(loss, vars, unconnected_gradients=tf.UnconnectedGradients.ZERO)
     return tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0)

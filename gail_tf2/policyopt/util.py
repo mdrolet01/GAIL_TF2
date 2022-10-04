@@ -35,6 +35,9 @@ def standardized(a):
     out /= np.std(a) + 1e-8
     return out
 
+def gaussian_entropy(stdevs_N_D):
+    d = stdevs_N_D.shape[1]
+    return .5*d*(1. + np.log(2.*np.pi)) + np.log(stdevs_N_D).sum(axis=1)
 
 import timeit
 class Timer(object):

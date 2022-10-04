@@ -6,6 +6,34 @@ from time import sleep
 import binascii
 from tensorflow.keras.backend import floatx
 
+# State/action spaces
+class Space(object):
+    @property
+    def storage_size(self): raise NotImplementedError
+    @property
+    def storage_type(self): raise NotImplementedError
+
+
+class FiniteSpace(Space):
+    def __init__(self, size): self._size = size
+    @property
+    def storage_size(self): return 1
+    @property
+    def storage_type(self): return int
+    @property
+    def size(self): return self._size
+
+
+class ContinuousSpace(Space):
+    def __init__(self, dim): self._dim = dim
+    @property
+    def storage_size(self): return self._dim
+    @property
+    def storage_type(self): return float
+    @property
+    def dim(self): return self._dim
+
+
 class Trajectory(object):
     __slots__ = ('obs_T_Do', 'obsfeat_T_Df', 'adist_T_Pa', 'a_T_Da', 'r_T')
     def __init__(self, obs_T_Do, obsfeat_T_Df, adist_T_Pa, a_T_Da, r_T):
@@ -119,6 +147,38 @@ class TrajBatch(object):
     @classmethod
     def LoadH5(cls, dset, obsfeat_fn):
         return cls.FromTrajs([Trajectory.LoadH5(v, obsfeat_fn) for k, v in dset.iteritems()])
+
+class Simulation(object):
+    def step(self, action):
+        '''
+        Returns: reward
+        '''
+        raise NotImplementedError
+
+    @property
+    def obs(self):
+        '''
+        Get current observation. The caller must not assume that the contents of
+        this array will never change, so this should usually be followed by a copy.
+
+        Returns:
+            numpy array
+        '''
+        raise NotImplementedError
+
+    @property
+    def done(self):
+        '''
+        Is this simulation done?
+
+        Returns:
+            boolean
+        '''
+        raise NotImplementedError
+
+    def draw(self):
+        raise NotImplementedError
+
 
 
 SimConfig = namedtuple('SimConfig', 'min_num_trajs min_total_sa batch_size max_traj_len')

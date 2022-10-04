@@ -3,7 +3,7 @@ import json
 
 import numpy as np
 
-# from gail_tf2.environments import rlgymenv
+from gail_tf2.environments import rlgymenv
 from gail_tf2 import policyopt
 from gail_tf2.policyopt import SimConfig, rl, util, nn
 
