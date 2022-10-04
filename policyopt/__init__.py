@@ -4,34 +4,7 @@ import numpy as np
 import multiprocessing
 from time import sleep
 import binascii
-
-# State/action spaces
-class Space(object):
-    @property
-    def storage_size(self): raise NotImplementedError
-    @property
-    def storage_type(self): raise NotImplementedError
-
-
-class FiniteSpace(Space):
-    def __init__(self, size): self._size = size
-    @property
-    def storage_size(self): return 1
-    @property
-    def storage_type(self): return int
-    @property
-    def size(self): return self._size
-
-
-class ContinuousSpace(Space):
-    def __init__(self, dim): self._dim = dim
-    @property
-    def storage_size(self): return self._dim
-    @property
-    def storage_type(self): return float
-    @property
-    def dim(self): return self._dim
-
+from tensorflow.keras.backend import floatx
 
 class Trajectory(object):
     __slots__ = ('obs_T_Do', 'obsfeat_T_Df', 'adist_T_Pa', 'a_T_Da', 'r_T')
@@ -64,10 +37,6 @@ class Trajectory(object):
         obs_T_Do = grp['obs_T_Do'][...]
         obsfeat_T_Df = obsfeat_fn(obs_T_Do) if obsfeat_fn is not None else obs_T_Do.copy()
         return cls(obs_T_Do, obsfeat_T_Df, grp['adist_T_Pa'][...], grp['a_T_Da'][...], grp['r_T'][...])
-
-
-# Utilities for dealing with batches of trajectories with different lengths
-
 
 def raggedstack(arrays, fill=0., axis=0, raggedaxis=1):
     '''
@@ -130,7 +99,7 @@ class TrajBatch(object):
         adist = RaggedArray([t.adist_T_Pa for t in trajs])
         a = RaggedArray([t.a_T_Da for t in trajs])
         r = RaggedArray([t.r_T for t in trajs])
-        time = RaggedArray([np.arange(len(t), dtype=float) for t in trajs])
+        time = RaggedArray([np.arange(len(t), dtype=floatx()) for t in trajs])
         return cls(trajs, obs, obsfeat, adist, a, r, time)
 
     def with_replaced_reward(self, new_r):
@@ -152,87 +121,6 @@ class TrajBatch(object):
         return cls.FromTrajs([Trajectory.LoadH5(v, obsfeat_fn) for k, v in dset.iteritems()])
 
 
-# MDP stuff
-
-class Simulation(object):
-    def step(self, action):
-        '''
-        Returns: reward
-        '''
-        raise NotImplementedError
-
-    @property
-    def obs(self):
-        '''
-        Get current observation. The caller must not assume that the contents of
-        this array will never change, so this should usually be followed by a copy.
-
-        Returns:
-            numpy array
-        '''
-        raise NotImplementedError
-
-    @property
-    def done(self):
-        '''
-        Is this simulation done?
-
-        Returns:
-            boolean
-        '''
-        raise NotImplementedError
-
-    def draw(self):
-        raise NotImplementedError
-
-
-class BatchedSim(object):
-    def __len__(self): raise NotImplementedError
-
-    def reset_sim(self, idx): raise NotImplementedError
-
-    def reset_all(self):
-        for i in xrange(len(self)):
-            self.reset_sim(i)
-
-    def is_done(self, idx): raise NotImplementedError
-
-    @property
-    def batch_obs(self):
-        '''
-        Get current observations for the simulation batch.
-
-        The caller must not assume that the contents of this array will never
-        change, so this should usually be followed by a copy.
-
-        Returns:
-            numpy array of shape (batch_size, observation_dim)
-        '''
-        raise NotImplementedError
-
-    def batch_step(self, actions_B_Da, num_threads): raise NotImplementedError
-
-
-class SequentialBatchedSim(BatchedSim):
-    '''
-    A 'fake' batched simulator that runs single-threaded simulations sequentially.
-    '''
-    def __init__(self, mdp, batch_size):
-        self.mdp = mdp
-        self.sims = [mdp.new_sim() for _ in xrange(batch_size)] # current active simulations
-    def __len__(self): return len(self.sims)
-    def reset_sim(self, idx): self.sims[idx] = self.mdp.new_sim()
-    def is_done(self, idx): return self.sims[idx].done
-    @property
-    def batch_obs(self): return np.stack([s.obs.copy() for s in self.sims])
-    def batch_step(self, actions_B_Da, num_threads=None):
-        assert actions_B_Da.shape[0] == len(self.sims)
-        rewards_B = np.zeros(len(self.sims))
-        for i_sim in xrange(len(self.sims)):
-            rewards_B[i_sim] = self.sims[i_sim].step(actions_B_Da[i_sim,:])
-        return rewards_B
-
-
 SimConfig = namedtuple('SimConfig', 'min_num_trajs min_total_sa batch_size max_traj_len')
 
 class MDP(object):
@@ -250,9 +138,6 @@ class MDP(object):
 
     def new_sim(self, init_state=None):
         raise NotImplementedError
-
-    def new_batched_sim(self, batch_size):
-        return SequentialBatchedSim(self, batch_size)
 
     def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None):
         '''Simulate a single trajectory'''
@@ -272,78 +157,6 @@ class MDP(object):
         a_T_Da = np.concatenate(actions); assert a_T_Da.shape == (len(obs), self.action_space.storage_size)
         r_T = np.asarray(rewards); assert r_T.shape == (len(obs),)
         return Trajectory(obs_T_Do, obsfeat_T_Df, adist_T_Pa, a_T_Da, r_T)
-
-    # @profile
-    def sim_multi(self, policy_fn, obsfeat_fn, cfg, num_threads=None, no_reward=False):
-        '''
-        Run many simulations, with policy evaluations batched together.
-
-        Samples complete trajectories (stopping when Simulation.done is true,
-        or when cfg.max_traj_len is reached) until both
-            (1) at least cfg.min_num_trajs trajectories have been sampled, and
-            (2) at least cfg.min_total_sa transitions have been sampled.
-        '''
-        util.warn('sim_multi is deprecated!')
-        assert isinstance(cfg, SimConfig)
-        Do, Da = self.obs_space.storage_size, self.action_space.storage_size
-
-        if num_threads is None:
-            num_threads = multiprocessing.cpu_count()
-
-        # Completed trajectories
-        num_sa = 0
-        completed_translists = []
-
-        # Simulations and their current trajectories
-        simbatch = self.new_batched_sim(cfg.batch_size) # TODO: reuse this across runs
-        sim_trans_B = [[] for _ in xrange(cfg.batch_size)] # list of (o,obsfeat,adist,a,r) transitions for each simulation
-
-        # Keep running simulations until we fill up the quota of trajectories and transitions
-        while True:
-            # If a simulation is done, pull out and save its trajectory, and restart it.
-            for i_sim in xrange(cfg.batch_size):
-                if simbatch.is_done(i_sim) or len(sim_trans_B[i_sim]) >= cfg.max_traj_len:
-                    # Save the trajectory
-                    completed_translists.append(sim_trans_B[i_sim])
-                    num_sa += len(sim_trans_B[i_sim])
-                    # and restart the simulation
-                    sim_trans_B[i_sim] = []
-                    simbatch.reset_sim(i_sim)
-
-            # Are both quotas filled? If so, we're done.
-            if len(completed_translists) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
-                break
-
-            # Keep simulating otherwise. Pull together observations from all simulations
-            obs_B_Do = simbatch.batch_obs.copy(); assert obs_B_Do.shape == (cfg.batch_size, Do)
-
-            # Evaluate policy
-            obsfeat_B_Df = obsfeat_fn(obs_B_Do)
-            a_B_Da, adist_B_Pa = policy_fn(obsfeat_B_Df)
-            assert a_B_Da.shape == (cfg.batch_size, Da)
-            assert adist_B_Pa.shape[0] == cfg.batch_size and adist_B_Pa.ndim == 2
-
-            # Step simulations
-            r_B = simbatch.batch_step(a_B_Da, num_threads=num_threads)
-            if no_reward: r_B[:] = np.nan
-
-            # Save the transitions
-            for i_sim in xrange(cfg.batch_size):
-                sim_trans_B[i_sim].append((obs_B_Do[i_sim,:], obsfeat_B_Df[i_sim,:], adist_B_Pa[i_sim,:], a_B_Da[i_sim,:], r_B[i_sim]))
-
-        assert sum(len(tlist) for tlist in completed_translists) == num_sa
-
-        # Pack together each trajectory individually
-        def translist_to_traj(tlist):
-            obs_T_Do = np.stack([trans[0] for trans in tlist]);  assert obs_T_Do.shape == (len(tlist), self.obs_space.storage_size)
-            obsfeat_T_Df = np.stack([trans[1] for trans in tlist]); assert obsfeat_T_Df.shape[0] == len(tlist)
-            adist_T_Pa = np.stack([trans[2] for trans in tlist]); assert adist_T_Pa.ndim == 2 and adist_T_Pa.shape[0] == len(tlist)
-            a_T_Da = np.stack([trans[3] for trans in tlist]); assert a_T_Da.shape == (len(tlist), self.action_space.storage_size)
-            r_T = np.stack([trans[4] for trans in tlist]); assert r_T.shape == (len(tlist),)
-            return Trajectory(obs_T_Do, obsfeat_T_Df, adist_T_Pa, a_T_Da, r_T)
-        completed_trajs = [translist_to_traj(tlist) for tlist in completed_translists]
-        assert len(completed_trajs) >= cfg.min_num_trajs and sum(len(traj) for traj in completed_trajs) >= cfg.min_total_sa
-        return TrajBatch.FromTrajs(completed_trajs)
 
     def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200):
         '''

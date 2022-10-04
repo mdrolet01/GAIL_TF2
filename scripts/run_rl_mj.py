@@ -78,8 +78,8 @@ def main():
         enable_obsnorm=bool(args.enable_obsnorm),
         enable_vnorm=True,
         max_kl=args.vf_max_kl,
-        damping=args.vsf_cg_damping,
-        time_scale=1./mdp.env_spec.max_episode_step,
+        damping=args.vf_cg_damping,
+        time_scale=1./mdp.env_spec.max_episode_steps,
         varscope_name='ValueFunc')
 
     max_traj_len = args.max_traj_len if args.max_traj_len is not None else mdp.env_spec.max_episode_steps
