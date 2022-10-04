@@ -1,3 +1,6 @@
+import tensorflow as tf
+from tensorflow.keras import Model
+from tensorflow.keras.backend import get_value, set_value, floatx
 from contextlib import contextmanager
 import collections
 import h5py
@@ -7,12 +10,8 @@ import numpy as np
 import os
 import os.path
 import tables, warnings; warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
-from . import util, tfutil
+from gail_tf2.policyopt import util, tfutil
 
-import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.backend import get_value, set_value, floatx
-from contextlib import contextmanager
 
 
 class NeuralNet(Model):

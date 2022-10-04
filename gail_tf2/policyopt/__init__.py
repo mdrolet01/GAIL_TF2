@@ -1,5 +1,5 @@
 from collections import namedtuple
-from policyopt import util
+from gail_tf2.policyopt import util
 import numpy as np
 import multiprocessing
 from time import sleep

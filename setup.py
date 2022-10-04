@@ -6,14 +6,13 @@ import runpy
 import pathlib
 
 root = pathlib.Path(__file__).parent
-version = 1.0
+version = runpy.run_path(str(root / "gail_tf2" / "version.py"))["version"]
+
 
 setup(
-    name='GAIL_TF2'
+    name='gail_tf2',
     version=version,
-    description='GAIL',
-    author='Michael Drolet',
-    author_email='mdrolet@asu.edu',
+    description='Tensorflow 2 version of Generative Adversarial Imitation Learning',
     license='MIT',
     packages=find_packages()
 )

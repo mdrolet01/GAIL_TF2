@@ -1,14 +1,12 @@
-from . import nn, util, tfutil, optim, RaggedArray, TrajBatch, Trajectory
+from tensorflow.keras.layers import Dense
+from tensorflow.keras import Model, Input
+from tensorflow.keras.backend import floatx
+from gail_tf2.policyopt import nn, util, tfutil, optim, RaggedArray, TrajBatch, Trajectory
 import gym
 import numpy as np
 import tensorflow as tf
 from gym.spaces import Box, Discrete
-
-from tensorflow.keras.layers import Dense
-from tensorflow.keras import Model, Input
-from tensorflow.keras.backend import floatx
-
-from . import nn, util, tfutil
+import numpy as np
 from abc import abstractmethod
 
 

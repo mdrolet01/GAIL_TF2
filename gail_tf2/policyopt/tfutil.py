@@ -1,5 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras.backend import floatx
+import numpy as np
 
 def flatcat(arrays):
     return tf.concat([tf.reshape(a, [-1]) for a in arrays], axis=0)

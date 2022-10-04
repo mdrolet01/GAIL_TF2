@@ -3,7 +3,7 @@ import scipy.sparse.linalg as ssl
 from collections import namedtuple
 from tensorflow.keras import Model
 import numpy as np
-from . import util, nn
+from gail_tf2.policyopt import util, nn
 from tensorflow.keras.backend import floatx
 
 def btlinesearch(f, x0, fx0, g, dx, accept_ratio, shrink_factor, max_steps, verbose=False):
