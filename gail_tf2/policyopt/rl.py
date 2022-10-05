@@ -57,7 +57,11 @@ class Policy(NeuralNet):
 
         # KL Hessian-vector product
         klgrad_P = tf.function(lambda _in : tfutil.flatgrad(kl_fn, _in, param_vars))
-        compute_kl_hvp = tf.function(lambda _in, v_P : tfutil.flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*v_P)), _in, param_vars))
+
+        # tin = [np.array([[1,2]], dtype=floatx()), np.array([[3]], dtype=floatx()), np.array([[1]], dtype=floatx()), np.array([[1]], dtype=floatx())]
+        # compute_kl_hvp = tf.function(lambda _in, v_P : tfutil.flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*v_P)), _in, param_vars))
+        compute_kl_hvp = tf.function(lambda _in, v_P : tfutil.flatgrad((lambda _v: tf.reduce_sum(klgrad_P(_in)*_v)), v_P, param_vars))
+        
         self._ngstep = optim.make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_kl_hvp)
 
     
@@ -104,8 +108,8 @@ class GaussianPolicy(Policy):
         
 
     def _make_actiondist_ops(self, obsfeat_B_Df):
-        dense1 = Dense(100, activation='tanh')(obsfeat_B_Df)
-        dense2 = Dense(100, activation='tanh')(dense1)
+        dense1 = Dense(64, activation='tanh')(obsfeat_B_Df)
+        dense2 = Dense(64, activation='tanh')(dense1)
         means_B_Da = Dense(self.action_space.dim)(dense2)
 
         self.__logstdevs_1_Da = tf.Variable(np.full((1, self.action_space.dim), self.cfg.init_logstdev), dtype=floatx(), name='logstdevs_1_Da')
@@ -177,14 +181,13 @@ class ValueFunc(NeuralNet):
         kl = tf.reduce_mean(tf.math.square(old_val_B - val_B))
         kl_fn = Model(inputs=all_inputs, outputs=kl)
         
-        # tin = [np.array([[1,2]], dtype=floatx()), np.array([[3,1]], dtype=floatx()), np.array([[1]], dtype=floatx()), np.array([[1]], dtype=floatx())]
-        
         compute_obj_kl = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in)))
         compute_obj_kl_with_grad = tf.function(lambda _in : (obj_fn(_in), kl_fn(_in), tfutil.flatgrad(obj_fn, _in, param_vars)))
 
         # KL Hessian-vector product
         klgrad_P = tf.function(lambda _in : tfutil.flatgrad(kl_fn, _in, param_vars))
-        compute_kl_hvp = tf.function(lambda _in, x_P : tfutil.flatgrad((lambda __in : tf.reduce_sum(klgrad_P(__in)*x_P)), _in, param_vars))
+        # tin = [np.array([[1,2]], dtype=floatx()), np.array([[3]], dtype=floatx()), np.array([[1]], dtype=floatx()), np.array([[1]], dtype=floatx())]
+        compute_kl_hvp = tf.function(lambda _in, x_P : tfutil.flatgrad((lambda _x: tf.reduce_sum(klgrad_P(_in)*_x)), x_P, param_vars))
         self._ngstep = optim.make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_kl_hvp)
     
     def evaluate(self, obs_B_Do, t_B):
@@ -216,8 +219,8 @@ class ValueFunc(NeuralNet):
         self.obsnorm.update(obs_B_Do)
 
     def _make_dense_net(self, net_input):
-        dense1 = Dense(15, activation='tanh')(net_input)
-        dense2 = Dense(15, activation='tanh')(dense1)
+        dense1 = Dense(64, activation='tanh')(net_input)
+        dense2 = Dense(64, activation='tanh')(dense1)
         out_layer = Dense(1)(dense2)
         return out_layer
 

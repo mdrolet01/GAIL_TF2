@@ -57,7 +57,6 @@ def ngstep(x0, obj0, objgrad0, obj_and_kl_func, hvpx0_func, max_kl, damping, max
     damped_hvp_func = lambda v: hvpx0_func(v) + damping*v
     hvpop = ssl.LinearOperator(shape=(x0.shape[0], x0.shape[0]), matvec=damped_hvp_func)
     step, _ = ssl.cg(hvpop, -objgrad0, maxiter=max_cg_iter)
-    # fullstep = step / np.sqrt(.5 * step.dot(damped_hvp_func(step)) / max_kl + 1e-8)
     fullstep = step / tf.math.sqrt(.5 * tf.tensordot(step, damped_hvp_func(step), 1) / max_kl + 1e-8)
 
     # Line search on objective with a hard KL wall
@@ -92,7 +91,7 @@ def make_ngstep_func(model, compute_obj_kl, compute_obj_kl_with_grad, compute_kl
     Makes a wrapper for ngstep for classes that implement nn.Model
     Subsamples inputs for fast Hessian-vector products
     '''
-    assert isinstance(model, Model)
+    assert isinstance(model, nn.NeuralNet)
 
     def wrapper(feed, max_kl, damping, subsample_hvp_frac=.1, grad_stop_tol=1e-6, max_cg_iter=10, enable_bt=True):
         assert isinstance(feed, tuple)
